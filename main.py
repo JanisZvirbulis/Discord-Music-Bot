@@ -94,30 +94,99 @@ ffmpeg_executable = 'ffmpeg'
 def get_ytdl_with_fallback():
     """Atgriež yt-dlp instance ar dažādām konfigurācijām fallback gadījumiem"""
     configs = [
-        # Galvenā konfigurācija
-        ytdl_format_options,
-        
-        # Fallback 1: Bez geo bypass
-        {**ytdl_format_options, 'geo_bypass': False},
-        
-        # Fallback 2: Ar citu User-Agent
-        {
-            **ytdl_format_options,
-            'http_headers': {
-                **ytdl_format_options['http_headers'],
-                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-            }
-        },
-        
-        # Fallback 3: Minimāla konfigurācija
+        # Konfigurācija 1: Ar cookies un bypass
         {
             'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'ignoreerrors': True,
-            'extractaudio': True,
-            'audioformat': 'mp3',
-            'outtmpl': '%(id)s.%(ext)s',
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],
+                    'player_client': ['android', 'web', 'ios'],
+                    'player_skip': ['configs'],
+                    'bypass_age_gate': True,
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip',
+                'X-YouTube-Client-Name': '3',
+                'X-YouTube-Client-Version': '17.31.35',
+            },
+        },
+        
+        # Konfigurācija 2: iOS client bypass
+        {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios'],
+                    'skip': ['dash', 'hls'],
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'com.google.ios.youtube/17.33.2 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)',
+                'X-YouTube-Client-Name': '5',
+                'X-YouTube-Client-Version': '17.33.2',
+            },
+        },
+        
+        # Konfigurācija 3: TV client (mazāk bloķē)
+        {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv_embedded'],
+                    'skip': ['dash', 'hls'],
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (SMART-TV; LINUX; Tizen 2.4.0) AppleWebkit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1',
+            },
+        },
+        
+        # Konfigurācija 4: Web embedded bypass
+        {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web_embedded'],
+                    'skip': ['dash', 'hls'],
+                }
+            },
+        },
+        
+        # Konfigurācija 5: Minimāla konfigurācija ar ytsearch
+        {
+            'format': 'worst/bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'default_search': 'ytsearch',
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],
+                    'player_client': ['android'],
+                }
+            },
+        },
+        
+        # Konfigurācija 6: Ļoti vienkārša konfigurācija
+        {
+            'format': 'worst',
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'default_search': 'ytsearch',
         }
     ]
     
@@ -198,61 +267,100 @@ class YTDLSource(discord.PCMVolumeTransformer):
     async def from_url(cls, url, *, loop=None, stream=False):
         loop = loop or asyncio.get_event_loop()
         
-        # Mēģina ar visām ytdl instances
+        print(f"🔍 Mēģinu ielādēt: {url}")
+        
+        # Sagatavo dažādas URL variācijas
+        search_queries = []
+        
+        if 'youtube.com' in url or 'youtu.be' in url:
+            # Ja ir YouTube URL, mēģina dažādas metodes
+            search_queries.extend([
+                url,
+                url.replace('www.youtube.com', 'm.youtube.com'),
+                url.replace('youtube.com', 'music.youtube.com'),
+            ])
+            
+            # Ja ir video ID, izveido search queries
+            import re
+            video_id_match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11})', url)
+            if video_id_match:
+                video_id = video_id_match.group(1)
+                search_queries.extend([
+                    f"https://www.youtube.com/watch?v={video_id}",
+                    f"https://m.youtube.com/watch?v={video_id}",
+                    f"ytsearch:{video_id}",
+                ])
+        else:
+            # Ja nav URL, izveido search queries
+            search_queries.extend([
+                f"ytsearch1:{url}",
+                f"ytsearch:{url}",
+                f"ytsearch:{url} official",
+                f"ytsearch:{url} audio",
+                url
+            ])
+        
+        # Mēģina ar visām ytdl instances un visiem search queries
         for i, ytdl_instance in enumerate(ytdl_instances):
-            try:
-                print(f"Mēģinu ar ytdl konfigurāciju {i+1}/{len(ytdl_instances)}")
-                
-                # Sagatavo search query
-                if not ('youtube.com' in url or 'youtu.be' in url):
-                    # Ja nav YouTube URL, pievieno ytsearch
-                    search_url = f"ytsearch1:{url}"
-                else:
-                    search_url = url
-                
-                data = await loop.run_in_executor(
-                    None, 
-                    lambda: ytdl_instance.extract_info(search_url, download=not stream)
-                )
-                
-                if 'entries' in data and len(data['entries']) > 0:
-                    data = data['entries'][0]
-                elif not data.get('url'):
+            print(f"Mēģinu ar ytdl konfigurāciju {i+1}/{len(ytdl_instances)}")
+            
+            for j, search_query in enumerate(search_queries):
+                try:
+                    print(f"  Query {j+1}/{len(search_queries)}: {search_query[:60]}...")
+                    
+                    data = await loop.run_in_executor(
+                        None, 
+                        lambda: ytdl_instance.extract_info(search_query, download=not stream)
+                    )
+                    
+                    if 'entries' in data and len(data['entries']) > 0:
+                        data = data['entries'][0]
+                    
+                    if not data or not data.get('url'):
+                        continue
+                    
+                    filename = data['url'] if stream else ytdl_instance.prepare_filename(data)
+                    title = data.get('title', 'Unknown')
+                    
+                    print(f"✅ Sekmīgi ielādēju: {title}")
+                    return cls(discord.FFmpegPCMAudio(filename, executable=ffmpeg_executable, **ffmpeg_options), data=data)
+                    
+                except Exception as e:
+                    print(f"  ❌ Query {j+1} neizdevās: {str(e)[:100]}...")
                     continue
-                
-                filename = data['url'] if stream else ytdl_instance.prepare_filename(data)
-                
-                print(f"✅ Sekmīgi ielādēju: {data.get('title', 'Unknown')}")
+        
+        # Ja nekas cits nestrādā, mēģina ar ļoti vienkāršu metodi
+        try:
+            print("🔄 Mēģinu finālo fallback...")
+            simple_search = url.split('/')[-1] if '/' in url else url
+            simple_search = simple_search.replace('watch?v=', '').replace('&', '').replace('=', ' ')
+            
+            final_ytdl = yt_dlp.YoutubeDL({
+                'format': 'worst',
+                'quiet': True,
+                'no_warnings': True,
+                'ignoreerrors': True,
+                'default_search': 'ytsearch',
+                'extract_flat': False,
+            })
+            
+            data = await loop.run_in_executor(
+                None, 
+                lambda: final_ytdl.extract_info(f"ytsearch1:{simple_search}", download=not stream)
+            )
+            
+            if data and 'entries' in data and len(data['entries']) > 0:
+                data = data['entries'][0]
+                filename = data['url'] if stream else final_ytdl.prepare_filename(data)
+                title = data.get('title', 'Unknown')
+                print(f"✅ Finālais fallback izdevās: {title}")
                 return cls(discord.FFmpegPCMAudio(filename, executable=ffmpeg_executable, **ffmpeg_options), data=data)
                 
-            except Exception as e:
-                print(f"❌ Konfigurācija {i+1} neizdevās: {str(e)}")
-                if i == len(ytdl_instances) - 1:
-                    # Ja visas konfigurācijas neizdevās, mēģina ar vēl vienu fallback
-                    try:
-                        print("Mēģinu finālo fallback ar ytsearch...")
-                        fallback_query = f"ytsearch:{url.split('/')[-1] if '/' in url else url}"
-                        simple_ytdl = yt_dlp.YoutubeDL({
-                            'format': 'worst',
-                            'quiet': True,
-                            'no_warnings': True,
-                            'ignoreerrors': True,
-                        })
-                        data = await loop.run_in_executor(
-                            None, 
-                            lambda: simple_ytdl.extract_info(fallback_query, download=not stream)
-                        )
-                        if 'entries' in data and len(data['entries']) > 0:
-                            data = data['entries'][0]
-                            filename = data['url'] if stream else simple_ytdl.prepare_filename(data)
-                            return cls(discord.FFmpegPCMAudio(filename, executable=ffmpeg_executable, **ffmpeg_options), data=data)
-                    except Exception as final_e:
-                        print(f"❌ Arī finālais fallback neizdevās: {final_e}")
-                
-                continue
+        except Exception as final_e:
+            print(f"❌ Arī finālais fallback neizdevās: {final_e}")
         
-        # Ja nekas neizdevās
-        raise Exception("Nevarēju ielādēt dziesmu ar nevienu konfigurāciju")
+        # Ja pilnīgi nekas nestrādā
+        raise Exception("Nevarēju ielādēt dziesmu ar nevienu metodi. YouTube var pilnībā bloķēt šo serveri.")
 
 def has_dj_role():
     """Pārbauda vai lietotājam ir DJ role"""
