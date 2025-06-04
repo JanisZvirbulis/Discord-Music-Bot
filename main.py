@@ -117,8 +117,7 @@ async def on_ready():
                 missing_perms.append("Speak")
             if not permissions.use_voice_activation:
                 missing_perms.append("Use Voice Activity")
-            if not permissions.use_slash_commands:
-                missing_perms.append("Use Slash Commands")
+            # use_slash_commands nav īsts permission - noņemam
                 
             if missing_perms:
                 print(f"⚠️  Serverī '{guild.name}' trūkst tiesību: {', '.join(missing_perms)}")
@@ -690,12 +689,14 @@ async def debug(ctx):
 
 **Permissions:**
 Send Messages: {'✅' if perms.send_messages else '❌'}
-Use Slash Commands: {'✅' if perms.use_slash_commands else '❌'}
+Read Message History: {'✅' if perms.read_message_history else '❌'}
 Connect: {'✅' if perms.connect else '❌'}
 Speak: {'✅' if perms.speak else '❌'}
+Use Voice Activity: {'✅' if perms.use_voice_activation else '❌'}
 
 **Slash Commands:** {len(bot.tree.get_commands())} komandas
-**Voice Client:** {'✅' if ctx.voice_client else '❌'}"""
+**Voice Client:** {'✅' if ctx.voice_client else '❌'}
+**Application Commands Scope:** {'✅' if hasattr(bot, 'tree') else '❌'}"""
         
         await ctx.send(debug_info)
     except Exception as e:
