@@ -662,38 +662,54 @@ async def slash_join(interaction: discord.Interaction):
 @app_commands.describe(search="YouTube URL vai dziesmas nosaukums")
 @has_dj_role_slash()
 async def slash_play(interaction: discord.Interaction, search: str):
-    # Defer response jo var būt lēns
-    await interaction.response.defer()
-    
-    # Pārbauda vai bots ir voice kanālā
-    if not interaction.guild.voice_client:
-        if interaction.user.voice:
-            voice_client = await interaction.user.voice.channel.connect()
-            # Sāk automātiskās atvienošanās taimeri
-            await start_disconnect_timer(interaction.guild.id, voice_client)
-        else:
-            await interaction.followup.send("❌ Tu neesi voice kanālā!")
-            return
-    
-    guild_id = interaction.guild.id
-    if guild_id not in music_queues:
-        music_queues[guild_id] = deque()
-    
     try:
-        # Meklē un sagatavo dziesmu
-        player = await YTDLSource.from_url(search, loop=bot.loop, stream=True)
+        # Ātri atbild, lai nenoticinu timeout
+        await interaction.response.send_message("🔍 Meklēju dziesmu...", ephemeral=False)
         
-        # Pievieno rindā
-        music_queues[guild_id].append(player)
+        # Pārbauda vai bots ir voice kanālā
+        if not interaction.guild.voice_client:
+            if interaction.user.voice:
+                try:
+                    voice_client = await interaction.user.voice.channel.connect()
+                    # Sāk automātiskās atvienošanās taimeri
+                    await start_disconnect_timer(interaction.guild.id, voice_client)
+                except Exception as e:
+                    await interaction.edit_original_response(content="❌ Nevarēju pievienoties voice kanālam!")
+                    return
+            else:
+                await interaction.edit_original_response(content="❌ Tu neesi voice kanālā!")
+                return
         
-        # Ja nekas neatskaņojas, sāk atskaņot
-        if not interaction.guild.voice_client.is_playing():
-            await play_next_slash(interaction)
-        else:
-            await interaction.followup.send(f"➕ **{player.title}** pievienots rindai!")
+        guild_id = interaction.guild.id
+        if guild_id not in music_queues:
+            music_queues[guild_id] = deque()
+        
+        try:
+            # Meklē un sagatavo dziesmu
+            player = await YTDLSource.from_url(search, loop=bot.loop, stream=True)
+            
+            # Pievieno rindā
+            music_queues[guild_id].append(player)
+            
+            # Ja nekas neatskaņojas, sāk atskaņot
+            if not interaction.guild.voice_client.is_playing():
+                await play_next_slash(interaction)
+            else:
+                await interaction.edit_original_response(content=f"➕ **{player.title}** pievienots rindai!")
+                
+        except Exception as e:
+            print(f"YTDLSource error: {e}")
+            await interaction.edit_original_response(content="❌ Nevarēju ielādēt dziesmu! Mēģini ar citu URL vai nosaukumu.")
             
     except Exception as e:
-        await interaction.followup.send("❌ Nevarēju ielādēt dziesmu!")
+        print(f"Slash play error: {e}")
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Nevarēju apstrādāt komandu!", ephemeral=True)
+            else:
+                await interaction.edit_original_response(content="❌ Nevarēju apstrādāt komandu!")
+        except:
+            pass
 
 @bot.tree.command(name="queue", description="Parāda mūzikas rindu")
 async def slash_queue(interaction: discord.Interaction):
@@ -909,17 +925,37 @@ async def play_next_slash(interaction):
             pass
     
     interaction.guild.voice_client.play(player, after=after_playing)
-    await interaction.followup.send(f"🎵 Tagad atskaņoju: **{player.title}**")
+    
+    # Atjaunina ziņu ar tagad atskaņojamo dziesmu
+    try:
+        await interaction.edit_original_response(content=f"🎵 Tagad atskaņoju: **{player.title}**")
+    except:
+        # Ja nevar edit original response, mēģina ar followup
+        try:
+            await interaction.followup.send(f"🎵 Tagad atskaņoju: **{player.title}**")
+        except:
+            pass
 
 # Error handler slash komandām
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("❌ Tev nepieciešama **DJ** role!", ephemeral=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Tev nepieciešama **DJ** role!", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Tev nepieciešama **DJ** role!", ephemeral=True)
+        except:
+            pass
     else:
         print(f"Slash command error: {error}")
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Kaut kas nogāja greizi!", ephemeral=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Kaut kas nogāja greizi!", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Kaut kas nogāja greizi!", ephemeral=True)
+        except:
+            pass
 
 @bot.command(name='sync', help='Sinhronizē slash komandas (tikai admin)')
 @commands.has_permissions(administrator=True)
