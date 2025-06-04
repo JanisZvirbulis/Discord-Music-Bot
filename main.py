@@ -15,6 +15,9 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 # Mūzikas rinda katram serverim
 music_queues = {}
 
+# Auto-disconnect taimeri katram serverim
+disconnect_timers = {}
+
 # yt-dlp konfigurācija
 ytdl_format_options = {
     'format': 'bestaudio/best',
@@ -59,8 +62,61 @@ ffmpeg_options = {
 
 # FFmpeg ceļš (Ubuntu/Linux serveriem parasti ir PATH)
 ffmpeg_executable = 'ffmpeg'
+# ffmpeg_executable = 'C:/ffmpeg/bin/ffmpeg.exe'  
 
 ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
+
+# Auto-disconnect funkcionalitāte
+async def start_disconnect_timer(guild_id, voice_client):
+    """Sāk 5 minūšu taimeri automātiskai atvienošanai"""
+    # Atceļ iepriekšējo taimeri, ja tāds eksistē
+    if guild_id in disconnect_timers:
+        disconnect_timers[guild_id].cancel()
+    
+    async def disconnect_after_timeout():
+        try:
+            await asyncio.sleep(300)  # 5 minūtes = 300 sekundes
+            
+            # Pārbauda vai bots vēl ir pievienojies un neatskaņo mūziku
+            if voice_client.is_connected() and not voice_client.is_playing():
+                # Iztīra rindu
+                if guild_id in music_queues:
+                    music_queues[guild_id].clear()
+                
+                # Mēģina atrast kanālu, kur sūtīt ziņu
+                guild = voice_client.guild
+                if guild:
+                    # Meklē konkrēti "musicbot-commands" kanālu
+                    target_channel = discord.utils.get(guild.text_channels, name="musicbot-commands")
+                    if target_channel and target_channel.permissions_for(guild.me).send_messages:
+                        try:
+                            await target_channel.send("⏰ Atvienojos no voice kanāla pēc 5 minūšu neaktivitātes.")
+                        except Exception as e:
+                            print(f"Nevarēju nosūtīt ziņu uz musicbot-commands: {e}")
+                    
+                
+                # Atvienojas
+                await voice_client.disconnect()
+                
+                # Noņem taimeri no saraksta
+                if guild_id in disconnect_timers:
+                    del disconnect_timers[guild_id]
+                    
+        except asyncio.CancelledError:
+            # Taimeris tika atcelts (normāls gadījums)
+            pass
+        except Exception as e:
+            print(f"Auto-disconnect kļūda: {e}")
+    
+    # Izveido un saglabā jauno taimeri
+    timer = asyncio.create_task(disconnect_after_timeout())
+    disconnect_timers[guild_id] = timer
+
+def cancel_disconnect_timer(guild_id):
+    """Atceļ automātiskās atvienošanās taimeri"""
+    if guild_id in disconnect_timers:
+        disconnect_timers[guild_id].cancel()
+        del disconnect_timers[guild_id]
 
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
@@ -184,12 +240,18 @@ async def join(ctx):
         else:
             await ctx.voice_client.move_to(channel)
             await ctx.send(f"🔄 Pārvietojos uz **{channel}** kanālu!")
+            # Sāk jaunu taimeri pēc pārvietošanās
+            await start_disconnect_timer(ctx.guild.id, ctx.voice_client)
             return
     
     # Pievienojas kanālam
     try:
-        await channel.connect()
+        voice_client = await channel.connect()
         await ctx.send(f"✅ Pievienojies **{channel}** kanālam!")
+        
+        # Sāk automātiskās atvienošanās taimeri
+        await start_disconnect_timer(ctx.guild.id, voice_client)
+        
     except Exception as e:
         print(f"Join kļūda: {e}")
         await ctx.send("❌ Nevarēju pievienoties voice kanālam!")
@@ -201,6 +263,10 @@ async def leave(ctx):
         guild_id = ctx.guild.id
         if guild_id in music_queues:
             music_queues[guild_id].clear()
+        
+        # Atceļ automātiskās atvienošanās taimeri
+        cancel_disconnect_timer(guild_id)
+        
         await ctx.voice_client.disconnect()
         await ctx.send("👋 Atstāju voice kanālu!")
     else:
@@ -212,7 +278,9 @@ async def play(ctx, *, url_or_search):
     # Pārbauda vai bots ir voice kanālā
     if not ctx.voice_client:
         if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
+            voice_client = await ctx.author.voice.channel.connect()
+            # Sāk automātiskās atvienošanās taimeri
+            await start_disconnect_timer(ctx.guild.id, voice_client)
         else:
             await ctx.send("❌ Tu neesi voice kanālā!")
             return
@@ -246,9 +314,15 @@ async def play_next(ctx):
     guild_id = ctx.guild.id
     
     if guild_id not in music_queues or len(music_queues[guild_id]) == 0:
+        # Ja nav vairāk dziesmu, sāk automātiskās atvienošanās taimeri
+        if ctx.voice_client and ctx.voice_client.is_connected():
+            await start_disconnect_timer(guild_id, ctx.voice_client)
         return
     
     player = music_queues[guild_id].popleft()
+    
+    # Atceļ automātiskās atvienošanās taimeri, jo sāk atskaņot mūziku
+    cancel_disconnect_timer(guild_id)
     
     def after_playing(error):
         if error:
@@ -271,6 +345,9 @@ async def pause(ctx):
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.pause()
         await ctx.send("⏸️ Mūzika pauzēta!")
+        
+        # Sāk automātiskās atvienošanās taimeri, jo mūzika ir pauzēta
+        await start_disconnect_timer(ctx.guild.id, ctx.voice_client)
     else:
         await ctx.send("❌ Nekas neatskaņojas!")
 
@@ -280,6 +357,9 @@ async def resume(ctx):
     if ctx.voice_client and ctx.voice_client.is_paused():
         ctx.voice_client.resume()
         await ctx.send("▶️ Mūzika turpināta!")
+        
+        # Atceļ automātiskās atvienošanās taimeri, jo mūzika atkal atskaņojas
+        cancel_disconnect_timer(ctx.guild.id)
     else:
         await ctx.send("❌ Mūzika nav pauzēta!")
 
@@ -292,6 +372,9 @@ async def stop(ctx):
             music_queues[guild_id].clear()
         ctx.voice_client.stop()
         await ctx.send("⏹️ Mūzika apturēta un rinda iztīrīta!")
+        
+        # Sāk automātiskās atvienošanās taimeri, jo mūzika ir apturēta
+        await start_disconnect_timer(guild_id, ctx.voice_client)
     else:
         await ctx.send("❌ Nekas neatskaņojas!")
 
@@ -399,20 +482,23 @@ async def on_command_error(ctx, error):
         await ctx.send("❌ Nepareizs arguments! Pārbaudi komandas sintaksi.")
     else:
         print(f"Neparedzēta kļūda: {error}")
+
 @bot.command(name='status', help='Parāda bota statusu')
 async def status(ctx):
     """Debugošanas komanda"""
     voice_clients = len(bot.voice_clients)
     guilds = len(bot.guilds)
+    active_timers = len(disconnect_timers)
     await ctx.send(f"🤖 **Bot Status:**\n"
                   f"📊 Serveri: {guilds}\n"
                   f"🔊 Voice savienojumi: {voice_clients}\n"
-                  f"🎵 Aktīvas rindas: {len(music_queues)}")
+                  f"🎵 Aktīvas rindas: {len(music_queues)}\n"
+                  f"⏰ Aktīvi taimeri: {active_timers}")
 
 @bot.command(name='help', help='Parāda palīdzību')
 async def help_command(ctx):
     """Custom help komanda bez embed"""
-    help_text = """🎵 **DJShaled - Discord Music Bot**
+    help_text = """🎵 **DJ BakedBeats 🌿🍪🔥😵 - Discord Music Bot**
 Lietotāji ar **DJ** role var vadīt mūziku
 
 **🎧 DJ Komandas:**
@@ -438,7 +524,10 @@ Lietotāji ar **DJ** role var vadīt mūziku
 `!play Rick Astley Never Gonna Give You Up`
 `!play https://youtube.com/watch?v=...`
 `!volume 75`
-`!remove 2`"""
+`!remove 2`
+
+**⏰ Auto-disconnect:**
+Bots automātiski atvienosies pēc 5 minūtēm bez mūzikas atskaņošanas."""
     
     await ctx.send(help_text)
 
@@ -473,11 +562,17 @@ async def slash_join(interaction: discord.Interaction):
         else:
             await interaction.guild.voice_client.move_to(channel)
             await interaction.response.send_message(f"🔄 Pārvietojos uz **{channel}** kanālu!")
+            # Sāk jaunu taimeri pēc pārvietošanās
+            await start_disconnect_timer(interaction.guild.id, interaction.guild.voice_client)
             return
     
     try:
-        await channel.connect()
+        voice_client = await channel.connect()
         await interaction.response.send_message(f"✅ Pievienojies **{channel}** kanālam!")
+        
+        # Sāk automātiskās atvienošanās taimeri
+        await start_disconnect_timer(interaction.guild.id, voice_client)
+        
     except Exception as e:
         await interaction.response.send_message("❌ Nevarēju pievienoties voice kanālam!", ephemeral=True)
 
@@ -491,7 +586,9 @@ async def slash_play(interaction: discord.Interaction, search: str):
     # Pārbauda vai bots ir voice kanālā
     if not interaction.guild.voice_client:
         if interaction.user.voice:
-            await interaction.user.voice.channel.connect()
+            voice_client = await interaction.user.voice.channel.connect()
+            # Sāk automātiskās atvienošanās taimeri
+            await start_disconnect_timer(interaction.guild.id, voice_client)
         else:
             await interaction.followup.send("❌ Tu neesi voice kanālā!")
             return
@@ -550,6 +647,9 @@ async def slash_pause(interaction: discord.Interaction):
     if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
         interaction.guild.voice_client.pause()
         await interaction.response.send_message("⏸️ Mūzika pauzēta!")
+        
+        # Sāk automātiskās atvienošanās taimeri, jo mūzika ir pauzēta
+        await start_disconnect_timer(interaction.guild.id, interaction.guild.voice_client)
     else:
         await interaction.response.send_message("❌ Nekas neatskaņojas!", ephemeral=True)
 
@@ -559,6 +659,9 @@ async def slash_resume(interaction: discord.Interaction):
     if interaction.guild.voice_client and interaction.guild.voice_client.is_paused():
         interaction.guild.voice_client.resume()
         await interaction.response.send_message("▶️ Mūzika turpināta!")
+        
+        # Atceļ automātiskās atvienošanās taimeri, jo mūzika atkal atskaņojas
+        cancel_disconnect_timer(interaction.guild.id)
     else:
         await interaction.response.send_message("❌ Mūzika nav pauzēta!", ephemeral=True)
 
@@ -571,6 +674,9 @@ async def slash_stop(interaction: discord.Interaction):
             music_queues[guild_id].clear()
         interaction.guild.voice_client.stop()
         await interaction.response.send_message("⏹️ Mūzika apturēta un rinda iztīrīta!")
+        
+        # Sāk automātiskās atvienošanās taimeri, jo mūzika ir apturēta
+        await start_disconnect_timer(guild_id, interaction.guild.voice_client)
     else:
         await interaction.response.send_message("❌ Nekas neatskaņojas!", ephemeral=True)
 
@@ -591,7 +697,7 @@ async def slash_volume(interaction: discord.Interaction, level: int):
 @bot.tree.command(name="djhelp", description="Parāda visas bot komandas")
 async def slash_djhelp(interaction: discord.Interaction):
     """Slash versija help komandai"""
-    help_text = """🎵 **DJShaled - Discord Music Bot**
+    help_text = """🎵 **DJ BakedBeats 🌿🍪🔥😵 - Discord Music Bot**
 Lietotāji ar **DJ** role var vadīt mūziku
 
 **🎧 DJ Komandas:**
@@ -616,6 +722,9 @@ Lietotāji ar **DJ** role var vadīt mūziku
 `/volume 75`
 `/remove 2`
 
+**⏰ Auto-disconnect:**
+Bots automātiski atvienosies pēc 5 minūtēm bez mūzikas atskaņošanas.
+
 *Pieejamas arī ! komandas: !help, !play utt.*"""
     
     await interaction.response.send_message(help_text, ephemeral=True)
@@ -627,6 +736,10 @@ async def slash_leave(interaction: discord.Interaction):
         guild_id = interaction.guild.id
         if guild_id in music_queues:
             music_queues[guild_id].clear()
+        
+        # Atceļ automātiskās atvienošanās taimeri
+        cancel_disconnect_timer(guild_id)
+        
         await interaction.guild.voice_client.disconnect()
         await interaction.response.send_message("👋 Atstāju voice kanālu!")
     else:
@@ -673,22 +786,40 @@ async def slash_remove(interaction: discord.Interaction, position: int):
     else:
         await interaction.response.send_message(f"❌ Nederīga pozīcija! Izmanto 1-{len(music_queues[guild_id])}", ephemeral=True)
 
+@bot.tree.command(name="nowplaying", description="Parāda pašreiz atskaņojamo dziesmu")
+async def slash_nowplaying(interaction: discord.Interaction):
+    if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
+        # Mēģina atrast pašreizējo dziesmu
+        if hasattr(interaction.guild.voice_client.source, 'title'):
+            title = interaction.guild.voice_client.source.title
+            await interaction.response.send_message(f"🎵 **Tagad atskaņoju:** {title}")
+        else:
+            await interaction.response.send_message("🎵 Kaut kas atskaņojas, bet nezinu nosaukumu...")
+    else:
+        await interaction.response.send_message("❌ Nekas neatskaņojas!", ephemeral=True)
+
 # Palīgfunkcija slash komandām
 async def play_next_slash(interaction):
     """Atskaņo nākamo dziesmu no rindas (slash version)"""
     guild_id = interaction.guild.id
     
     if guild_id not in music_queues or len(music_queues[guild_id]) == 0:
+        # Ja nav vairāk dziesmu, sāk automātiskās atvienošanās taimeri
+        if interaction.guild.voice_client and interaction.guild.voice_client.is_connected():
+            await start_disconnect_timer(guild_id, interaction.guild.voice_client)
         return
     
     player = music_queues[guild_id].popleft()
+    
+    # Atceļ automātiskās atvienošanās taimeri, jo sāk atskaņot mūziku
+    cancel_disconnect_timer(guild_id)
     
     def after_playing(error):
         if error:
             print(f'Atskaņošanas kļūda: {error}')
         
         # Atskaņo nākamo dziesmu
-        coro = play_next(interaction)
+        coro = play_next_slash(interaction)
         fut = asyncio.run_coroutine_threadsafe(coro, bot.loop)
         try:
             fut.result()
@@ -739,7 +870,8 @@ Use Voice Activity: {'✅' if perms.use_voice_activation else '❌'}
 
 **Slash Commands:** {len(bot.tree.get_commands())} komandas
 **Voice Client:** {'✅' if ctx.voice_client else '❌'}
-**Application Commands Scope:** {'✅' if hasattr(bot, 'tree') else '❌'}"""
+**Application Commands Scope:** {'✅' if hasattr(bot, 'tree') else '❌'}
+**Active Timers:** {len(disconnect_timers)}"""
         
         await ctx.send(debug_info)
     except Exception as e:
@@ -752,7 +884,9 @@ async def testplay(ctx, *, search_term):
     """Test komanda dažādām meklēšanas metodēm"""
     if not ctx.voice_client:
         if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
+            voice_client = await ctx.author.voice.channel.connect()
+            # Sāk automātiskās atvienošanās taimeri
+            await start_disconnect_timer(ctx.guild.id, voice_client)
         else:
             await ctx.send("❌ Tu neesi voice kanālā!")
             return
@@ -791,6 +925,19 @@ async def testplay(ctx, *, search_term):
             continue
     
     await loading_msg.edit(content="❌ Visas metodes neizdevās. YouTube var bloķēt Railway serveri.")
+
+# Event handler - ja bots tiek atvienots no voice kanāla
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """Iztīra taimeri, ja bots tiek atvienots"""
+    if member == bot.user and before.channel is not None and after.channel is None:
+        # Bots tika atvienots no voice kanāla
+        guild_id = before.channel.guild.id
+        cancel_disconnect_timer(guild_id)
+        
+        # Iztīra rindu
+        if guild_id in music_queues:
+            music_queues[guild_id].clear()
 
 # Palaiž botu
 if __name__ == "__main__":
