@@ -27,7 +27,13 @@ ytdl_format_options = {
     'quiet': True,
     'no_warnings': True,
     'default_search': 'auto',
-    'source_address': '0.0.0.0'
+    'source_address': '0.0.0.0',
+    # Pievienojam headers lai apiet blokējumus
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    },
+    'geo_bypass': True,
+    'geo_bypass_country': 'US'
 }
 
 ffmpeg_options = {
@@ -37,7 +43,6 @@ ffmpeg_options = {
 
 # FFmpeg ceļš (Ubuntu/Linux serveriem parasti ir PATH)
 ffmpeg_executable = 'ffmpeg'
-# ffmpeg_executable = 'C:/ffmpeg/bin/ffmpeg.exe'  
 
 ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
 
@@ -80,17 +85,19 @@ async def on_ready():
     print(f'{bot.user} ir gatavs atskaņot mūziku! 🎵')
     print(f'Pievienots {len(bot.guilds)} serveriem')
     
-    # Sinhronizē slash komandas
+    # Sinhronizē slash komandas automātiski serverī
     try:
         # Globāla sinhronizācija
         synced = await bot.tree.sync()
         print(f"✅ Sinhronizēju {len(synced)} globālās slash komandas")
         
-        # Ja vēlies ātrāku sinhronizāciju konkrētam serverim, noņem komentāru:
-        # guild_id = 123456789  # Tavs server ID
-        # guild = discord.Object(id=guild_id)
-        # synced_guild = await bot.tree.sync(guild=guild)
-        # print(f"✅ Sinhronizēju {len(synced_guild)} slash komandas serverim")
+        # Guild-specific sync ātrākai sinhronizācijai (noņem komentāru ja vajag)
+        # for guild in bot.guilds:
+        #     try:
+        #         guild_synced = await bot.tree.sync(guild=guild)
+        #         print(f"✅ Sinhronizēju {len(guild_synced)} komandas serverim {guild.name}")
+        #     except Exception as e:
+        #         print(f"❌ Nevarēju sinhronizēt serverim {guild.name}: {e}")
         
     except Exception as e:
         print(f"❌ Nevarēju sinhronizēt slash komandas: {e}")
@@ -110,6 +117,8 @@ async def on_ready():
                 missing_perms.append("Speak")
             if not permissions.use_voice_activation:
                 missing_perms.append("Use Voice Activity")
+            if not permissions.use_slash_commands:
+                missing_perms.append("Use Slash Commands")
                 
             if missing_perms:
                 print(f"⚠️  Serverī '{guild.name}' trūkst tiesību: {', '.join(missing_perms)}")
