@@ -28,12 +28,28 @@ ytdl_format_options = {
     'no_warnings': True,
     'default_search': 'auto',
     'source_address': '0.0.0.0',
-    # Pievienojam headers lai apiet blokējumus
+    # Anti-bot bypass headers
     'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-us,en;q=0.5',
+        'Accept-Encoding': 'gzip,deflate',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
     },
     'geo_bypass': True,
-    'geo_bypass_country': 'US'
+    'geo_bypass_country': 'US',
+    # YouTube specific options
+    'extractor_args': {
+        'youtube': {
+            'skip': ['dash', 'hls']
+        }
+    },
+    # Fallback options
+    'extract_flat': False,
+    'writethumbnail': False,
+    'writeinfojson': False,
 }
 
 ffmpeg_options = {
@@ -56,7 +72,34 @@ class YTDLSource(discord.PCMVolumeTransformer):
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=False):
         loop = loop or asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+        
+        # First attempt with standard extraction
+        try:
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+        except Exception as e:
+            print(f"Primary extraction failed: {e}")
+            
+            # Fallback: try with different search method
+            try:
+                # If direct URL fails, try search
+                if 'youtube.com' in url or 'youtu.be' in url:
+                    # Extract video ID and search by title instead
+                    import re
+                    video_id_match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
+                    if video_id_match:
+                        # Try ytsearch instead of direct URL
+                        search_query = f"ytsearch:{video_id_match.group(1)}"
+                        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_query, download=not stream))
+                    else:
+                        raise e
+                else:
+                    # For search queries, add ytsearch prefix
+                    search_query = f"ytsearch:{url}"
+                    data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_query, download=not stream))
+                    
+            except Exception as e2:
+                print(f"Fallback extraction also failed: {e2}")
+                raise e  # Re-raise original error
         
         if 'entries' in data:
             data = data['entries'][0]
@@ -702,10 +745,52 @@ Use Voice Activity: {'✅' if perms.use_voice_activation else '❌'}
     except Exception as e:
         await ctx.send(f"Debug kļūda: {e}")
 
-@bot.command(name='test', help='Vienkārša testa komanda')
-async def test(ctx):
-    """Testa komanda"""
-    await ctx.send("✅ Bot darbojas! Prefix komandas OK.")
+# Pievienojam test komandu
+@bot.command(name='testplay', help='Testē dažādas atskaņošanas metodes')
+@has_dj_role()
+async def testplay(ctx, *, search_term):
+    """Test komanda dažādām meklēšanas metodēm"""
+    if not ctx.voice_client:
+        if ctx.author.voice:
+            await ctx.author.voice.channel.connect()
+        else:
+            await ctx.send("❌ Tu neesi voice kanālā!")
+            return
+    
+    loading_msg = await ctx.send("🔍 Testēju dažādas meklēšanas metodes...")
+    
+    # Test methods
+    methods = [
+        f"ytsearch:{search_term}",
+        f"ytsearch5:{search_term}",
+        search_term,
+        f"{search_term} official audio",
+        f"{search_term} lyrics"
+    ]
+    
+    for i, method in enumerate(methods, 1):
+        try:
+            await loading_msg.edit(content=f"🔍 Mēģinu metodi {i}/5: {method[:50]}...")
+            
+            # Test extraction
+            data = await asyncio.get_event_loop().run_in_executor(
+                None, 
+                lambda: ytdl.extract_info(method, download=False)
+            )
+            
+            if 'entries' in data and data['entries']:
+                title = data['entries'][0].get('title', 'Unknown')
+                await loading_msg.edit(content=f"✅ Metode {i} strādā: **{title}**")
+                return
+            elif data.get('title'):
+                await loading_msg.edit(content=f"✅ Metode {i} strādā: **{data['title']}**")
+                return
+                
+        except Exception as e:
+            print(f"Method {i} failed: {e}")
+            continue
+    
+    await loading_msg.edit(content="❌ Visas metodes neizdevās. YouTube var bloķēt Railway serveri.")
 
 # Palaiž botu
 if __name__ == "__main__":
